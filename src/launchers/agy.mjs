@@ -10,7 +10,7 @@ export const agyLauncher = {
   buildArgs(promptText, { phase = 'plan', model = null, conversationId = null } = {}) {
     const args = [];
     if (phase === 'implement') {
-      args.push('--mode', 'auto', '--dangerously-skip-permissions');
+      args.push('--mode', 'accept-edits', '--dangerously-skip-permissions');
     } else {
       args.push('--mode', 'plan', '--dangerously-skip-permissions', '--sandbox');
     }
@@ -85,8 +85,9 @@ export const agyLauncher = {
   },
 
   /**
-   * Parses `stream-json` NDJSON (or single JSON) output to extract the clean
-   * final response and conversation_id for session resumption.
+   * Parses `stream-json` NDJSON (or single JSON) output to extract ONLY the final
+   * agent_response step (stripping intermediate progress/waiting turns) and
+   * conversation_id for session resumption.
    */
   parseOutput(stdout) {
     const trimmed = (stdout || '').trim();
@@ -94,7 +95,8 @@ export const agyLauncher = {
 
     let conversationId = null;
     let finalResponse = null;
-    const textDeltas = [];
+    const responseByStep = new Map();
+    const stepOrder = [];
 
     for (const rawLine of trimmed.split(/\r?\n/)) {
       const line = rawLine.trim();
@@ -116,19 +118,34 @@ export const agyLauncher = {
         if (typeof obj.result.response === 'string') {
           finalResponse = obj.result.response.trim();
         }
-      } else if (obj.event === 'step_update' && typeof obj.step_update?.text_delta === 'string') {
-        textDeltas.push(obj.step_update.text_delta);
+      } else if (
+        obj.event === 'step_update' &&
+        obj.step_update?.step_type === 'agent_response' &&
+        typeof obj.step_update.text_delta === 'string'
+      ) {
+        const idx = obj.step_update.step_index ?? 0;
+        if (!responseByStep.has(idx)) {
+          responseByStep.set(idx, []);
+          stepOrder.push(idx);
+        }
+        responseByStep.get(idx).push(obj.step_update.text_delta);
       } else if (typeof obj.response === 'string') {
         // Fallback for single-object `--output-format json`
         finalResponse = obj.response.trim();
       }
     }
 
+    // Prefer the last non-empty agent_response step so intermediate "waiting for checks..."
+    // turns don't pollute the Linear comment.
+    for (let i = stepOrder.length - 1; i >= 0; i -= 1) {
+      const stepText = responseByStep.get(stepOrder[i]).join('').trim();
+      if (stepText.length > 0) {
+        return { text: stepText, conversationId };
+      }
+    }
+
     if (finalResponse !== null) {
       return { text: finalResponse, conversationId };
-    }
-    if (textDeltas.length > 0) {
-      return { text: textDeltas.join('').trim(), conversationId };
     }
     return { text: trimmed, conversationId };
   },

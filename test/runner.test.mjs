@@ -109,6 +109,7 @@ async function withTestServer(overrides = {}, deps = {}) {
     delegateLabel: 'delegate',
     inProgressStateName: 'In Progress',
     inReviewStateName: 'In Review',
+    blockedStateName: 'Blocked',
     reviewMention: '',
     dryRun: false,
     dataDir,
@@ -301,7 +302,7 @@ test('direct-to-implement: ticket with `agent` but no `plan` ignores create and 
     assert.equal(moved.json.accepted, true);
     assert.equal(moved.json.phase, 'implement');
     assert.equal(ctx.spawns.length, 1);
-    assert.ok(ctx.spawns[0].args.includes('auto'));
+    assert.ok(ctx.spawns[0].args.includes('accept-edits'));
     assert.equal(ctx.linearClient.commentsCreated.length, 1);
     assert.ok(ctx.linearClient.commentsCreated[0].body.includes('Implementation Debrief'));
     assert.equal(ctx.linearClient.reviewMoves.length, 1);
@@ -390,7 +391,7 @@ test('plan + thread reply resumes exact conversation in plan mode without buildi
     assert.equal(implRes.status, 200);
     assert.equal(implRes.json.phase, 'implement');
     assert.equal(ctx.spawns.length, 3);
-    assert.ok(ctx.spawns[2].args.includes('auto'));
+    assert.ok(ctx.spawns[2].args.includes('accept-edits'));
     assert.equal(ctx.linearClient.reviewMoves.length, 1);
   } finally {
     await ctx.cleanup();
@@ -491,7 +492,7 @@ test('enables orchestrator delegation directive only when delegate label is pres
   }
 });
 
-test('parses and formats agy stream-json NDJSON output cleanly', () => {
+test('parses and formats agy stream-json NDJSON output cleanly, stripping intermediate turns', () => {
   const agy = getLauncher('agy');
   const ndjson = [
     JSON.stringify({ event: 'init', conversation_id: 'conv-stream-1' }),
@@ -501,14 +502,18 @@ test('parses and formats agy stream-json NDJSON output cleanly', () => {
     }),
     JSON.stringify({
       event: 'step_update',
-      step_update: { step_index: 2, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Hello ' },
+      step_update: { step_index: 2, state: 'ACTIVE', step_type: 'agent_response', text_delta: "I'm waiting for typecheck..." },
+    }),
+    JSON.stringify({
+      event: 'step_update',
+      step_update: { step_index: 5, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Final debrief: all checks passed.' },
     }),
     JSON.stringify({
       event: 'result',
       result: {
         conversation_id: 'conv-stream-1',
         status: 'SUCCESS',
-        response: 'Hello world\n',
+        response: "I'm waiting for typecheck...\nFinal debrief: all checks passed.\n",
         duration_seconds: 2.5,
         usage: { total_tokens: 1200 },
       },
@@ -517,12 +522,51 @@ test('parses and formats agy stream-json NDJSON output cleanly', () => {
 
   const parsed = agy.parseOutput(ndjson);
   assert.equal(parsed.conversationId, 'conv-stream-1');
-  assert.equal(parsed.text, 'Hello world');
+  assert.equal(parsed.text, 'Final debrief: all checks passed.');
 
   const state = {};
   const lines = ndjson.split('\n').map((l) => agy.formatStreamLine(l, state)).filter(Boolean);
   assert.ok(lines.some((l) => l.includes('conv-stream-1')));
   assert.ok(lines.some((l) => l.includes('[thinking] checking repo...')));
-  assert.ok(lines.some((l) => l.includes('Hello ')));
+  assert.ok(lines.some((l) => l.includes('Final debrief: all checks passed.')));
   assert.ok(lines.some((l) => l.includes('finished (SUCCESS, 2.5s, 1200 tokens)')));
+});
+
+test('moves ticket to Blocked (not In Review) when agent reports STATUS: BLOCKED', async () => {
+  const ctx = await withTestServer(
+    {},
+    {
+      spawnFn: async () => ({
+        code: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({
+          conversation_id: 'conv-blocked',
+          response: 'STATUS: BLOCKED\nTypecheck failed in unrelated module.',
+        }),
+        stderr: '',
+      }),
+    }
+  );
+  try {
+    const res = await ctx.postWebhook(
+      makeIssuePayload({
+        action: 'update',
+        updatedFrom: { stateId: 'st-todo' },
+        data: {
+          state: { id: 'st-prog', name: 'In Progress' },
+          labels: [{ name: 'agent' }],
+        },
+      })
+    );
+    assert.equal(res.status, 200);
+    assert.equal(ctx.linearClient.commentsCreated.length, 1);
+    assert.ok(ctx.linearClient.commentsCreated[0].body.includes('Implementation Blocked'));
+    assert.equal(ctx.linearClient.reviewMoves.length, 0);
+    assert.equal(ctx.linearClient.stateMoves.length, 1);
+    assert.equal(ctx.linearClient.stateMoves[0].stateName, 'Blocked');
+    assert.equal(ctx.linearClient.stateMoves[0].assigneeId, 'user-will');
+  } finally {
+    await ctx.cleanup();
+  }
 });

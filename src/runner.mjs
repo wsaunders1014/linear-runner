@@ -95,11 +95,20 @@ function formatPlanComment({ agent, body, isReply = false }) {
   ].join('\n');
 }
 
-function formatDebriefComment({ agent, body, mention }) {
-  const tagLine = mention ? `${mention} Ready for review.` : 'Ready for review.';
+function formatDebriefComment({ agent, body, mention, blocked = false }) {
+  const tagLine = blocked
+    ? mention
+      ? `${mention} Blocked — moved ticket to **Blocked** (checks or blockers need attention).`
+      : 'Blocked — moved ticket to **Blocked** (checks or blockers need attention).'
+    : mention
+      ? `${mention} Ready for review.`
+      : 'Ready for review.';
+  const heading = blocked
+    ? `### Implementation Blocked (\`${agent}\`)`
+    : `### Implementation Debrief (\`${agent}\`)`;
   return [
-    `<!-- linear-runner:debrief agent=${agent} -->`,
-    `### Implementation Debrief (\`${agent}\`)`,
+    `<!-- linear-runner:debrief agent=${agent} blocked=${blocked} -->`,
+    heading,
     '',
     tagLine,
     '',
@@ -309,7 +318,8 @@ export class JobRunner {
         };
       }
 
-      // Phase 2 / Implement: post debrief tagging user, move to In Review, assign to user
+      // Phase 2 / Implement: post debrief tagging user; only move to In Review if not blocked
+      const isBlocked = /(?:^|\n)\s*STATUS:\s*BLOCKED\b/i.test(agentOutput);
       const viewer = await this.linear.getViewer();
       const mention =
         this.config.reviewMention ||
@@ -319,6 +329,7 @@ export class JobRunner {
         agent: launcher.name,
         body: agentOutput,
         mention,
+        blocked: isBlocked,
       });
       const posted = await this.linear.createComment(job.issueId, debriefBody, {
         parentId: replyParentId,
@@ -338,21 +349,31 @@ export class JobRunner {
       if (!linearIssue) {
         linearIssue = await this.linear.getIssueWithComments(job.issueId);
       }
-      await this.linear.moveIssueToReview({
-        issue: linearIssue,
-        stateName: this.config.inReviewStateName,
-        assigneeId: viewer?.id,
-      });
+      if (isBlocked) {
+        await this.linear.moveIssueToState({
+          issue: linearIssue,
+          stateName: this.config.blockedStateName || 'Blocked',
+          assigneeId: viewer?.id,
+        });
+      } else {
+        await this.linear.moveIssueToReview({
+          issue: linearIssue,
+          stateName: this.config.inReviewStateName,
+          assigneeId: viewer?.id,
+        });
+      }
 
-      this.store.updateStatus(jobId, 'completed', {
+      this.store.updateStatus(jobId, isBlocked ? 'blocked' : 'completed', {
         conversationId: nextConversationId,
         postedCommentId: posted?.id || null,
       });
       this.logger.log(
-        `[runner] Posted debrief, moved ${job.identifier} to "${this.config.inReviewStateName}", and assigned to ${viewer?.displayName || viewer?.name || 'viewer'}`
+        isBlocked
+          ? `[runner] Posted BLOCKED debrief and moved ${job.identifier} to "${this.config.blockedStateName || 'Blocked'}"`
+          : `[runner] Posted debrief, moved ${job.identifier} to "${this.config.inReviewStateName}", and assigned to ${viewer?.displayName || viewer?.name || 'viewer'}`
       );
       return {
-        status: 'completed',
+        status: isBlocked ? 'blocked' : 'completed',
         phase: 'implement',
         agent: launcher.name,
         conversationId: nextConversationId,

@@ -45,6 +45,7 @@ export function loadConfig(overrides = {}) {
   const delegateLabel = env.DELEGATE_LABEL !== undefined ? env.DELEGATE_LABEL.trim() : 'delegate';
   const inProgressStateName = (env.IN_PROGRESS_STATE_NAME || 'In Progress').trim();
   const inReviewStateName = (env.IN_REVIEW_STATE_NAME || 'In Review').trim();
+  const blockedStateName = (env.BLOCKED_STATE_NAME || 'Blocked').trim();
   const reviewMention = (env.REVIEW_MENTION || '').trim();
   const dryRun = env.DRY_RUN === 'true' || env.DRY_RUN === '1' || overrides.dryRun === true;
   const dataDir = env.DATA_DIR || path.join(ROOT_DIR, 'data');
@@ -137,6 +138,7 @@ export function loadConfig(overrides = {}) {
     delegateLabel,
     inProgressStateName,
     inReviewStateName,
+    blockedStateName,
     reviewMention,
     dryRun,
     dataDir,
