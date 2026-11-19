@@ -1,0 +1,16 @@
+{
+  "name": "linear-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Linear webhook runner that launches an interactive AI coding agent in macOS Terminal",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dry-run": "DRY_RUN=true node src/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:webhook": "node bin/send-test-webhook.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
